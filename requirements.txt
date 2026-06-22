@@ -1,0 +1,9 @@
+# Python dependencies for the backend
+dotenv
+uvicorn
+
+# FastAPI and LangChain dependencies for the backend
+"fastapi[all]"
+langchain langchain-groq
+langchain-experimental
+pandas
