@@ -8,7 +8,6 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
-
 from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_classic.agents import create_tool_calling_agent, AgentExecutor
@@ -49,10 +48,8 @@ def python_repl_tool(command: str) -> str:
 
 tools = [python_repl_tool]
 
-# 2. Initialize the Groq Model
 llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.1)
 
-# 3. Architect the Agent's Brain using modern tool-calling structures
 system_prompt = """You are an elite Data Scientist and Statistician. You have access to a fully functional Python REPL.
 Instead of guessing math, you MUST write and execute Python code using `pandas` and `numpy` to find the exact statistical truth.
 
