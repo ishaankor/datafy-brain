@@ -49,6 +49,7 @@ langgraph-sdk==0.4.2
 langsmith==0.9.0
 markdown-it-py==4.2.0
 MarkupSafe==3.0.3
+matplotlib==3.11.0
 mdurl==0.1.2
 multidict==6.7.1
 numpy==2.5.0
