@@ -1,16 +1,18 @@
 import os
 import sys
 import io
-from contextlib import redirect_stdout
 import pandas as pd
+import json
+from contextlib import redirect_stdout
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List, Optional
 from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_classic.agents import create_tool_calling_agent, AgentExecutor
+from langchain.agents import create_tool_calling_agent, AgentExecutor
 from langchain_core.tools import tool
 
 load_dotenv()
@@ -86,21 +88,20 @@ async def chat_endpoint(req: ChatRequest):
         if active_csv:
             with open("current_data.csv", "w") as f:
                 f.write(active_csv)
-
-        langchain_msgs = []
-        for msg in req.messages:
-            if msg.role == "user":
-                langchain_msgs.append(("human", msg.content))
-            elif msg.role == "assistant":
-                langchain_msgs.append(("ai", msg.content))
         
-        context_note = f"\n\n[SYSTEM: The active data context is '{req.selectionLabel}'. The file 'current_data.csv' has been updated with this data. Analyze this data to what the USER is asking for.]"
-        if langchain_msgs and langchain_msgs[-1][0] == "human":
-            langchain_msgs[-1] = ("human", langchain_msgs[-1][1] + context_note)
+        async def generate():
+            langchain_msgs = [(m.role if m.role != "assistant" else "ai", m.content) for m in req.messages]
+            
+            context_note = f"\n\n[SYSTEM: The active data context is '{req.selectionLabel}'. The file 'current_data.csv' has been updated with this data. Analyze this data to answer what the USER is asking for.]"
+            if langchain_msgs and langchain_msgs[-1][0] == "human":
+                langchain_msgs[-1] = ("human", langchain_msgs[-1][1] + context_note)
+            
+            result = await agent_executor.ainvoke({"messages": langchain_msgs})
+            output = result["output"]
+            
+            yield f"0:{json.dumps(output)}\n"
 
-        result = agent_executor.invoke({"messages": langchain_msgs})
-        
-        return {"response": result["output"]}
+        return StreamingResponse(generate(), media_type="text/plain")
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
