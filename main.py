@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from typing import List, Optional
 from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain.agents import create_tool_calling_agent, AgentExecutor
+from langchain_classic.agents import create_tool_calling_agent, AgentExecutor
 from langchain_core.tools import tool
 
 load_dotenv()
