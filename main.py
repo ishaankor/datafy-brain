@@ -103,4 +103,5 @@ async def chat_endpoint(req: ChatRequest):
         return {"response": result["output"]}
     
     except Exception as e:
+        print(f"CRASH: {e}", file=sys.stderr)
         raise HTTPException(status_code=500, detail=str(e))
