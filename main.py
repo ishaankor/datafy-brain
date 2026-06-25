@@ -33,7 +33,7 @@ app.add_middleware(
 )
 
 llm = ChatOpenRouter(
-    model="deepseek/deepseek-chat:free", 
+    model="nvidia/llama-nemotron-rerank-vl-1b-v2:free", 
     temperature=0.1
 )
 
