@@ -3,13 +3,16 @@ import sys
 import io
 import json
 import operator
+import logging
 from contextlib import redirect_stdout
-from typing import List, Optional, TypedDict, Annotated, Sequence, Any
+from typing import List, Optional, TypedDict, Annotated, Sequence
+
 import pandas as pd
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, AIMessage
 from langchain_core.tools import tool
 from langchain_openrouter import ChatOpenRouter
@@ -20,6 +23,15 @@ from langchain.agents import create_agent
 # 1. SETUP & CONFIGURATION
 # ---------------------------------------------------------
 load_dotenv()
+
+# Setup structured logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - [%(name)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+logger = logging.getLogger("DataCopilot")
+
 app = FastAPI()
 
 app.add_middleware(
@@ -30,7 +42,7 @@ app.add_middleware(
 )
 
 llm = ChatOpenRouter(
-    model="nvidia/nemotron-3-ultra-550b-a55b:free", 
+    model="google/gemma-4-26b-a4b-it:free", 
     temperature=0.1
 )
 
@@ -62,20 +74,24 @@ repl_locals = {}
 def python_repl_tool(command: str) -> str:
     """Executes arbitrary Python code. Use this for pandas manipulations, statistical tests, and ML models.
     Always print() the final values you want to observe."""
+    logger.info(f"Executing Python Code:\n{command}")
     f = io.StringIO()
     with redirect_stdout(f):
         try:
             exec(command, globals(), repl_locals)
         except Exception as e:
+            logger.error(f"Python Error: {e}")
             return f"{f.getvalue()}\nError: {e}".strip()
-    return f.getvalue().strip()
+    
+    output = f.getvalue().strip()
+    logger.info(f"Python Output:\n{output}")
+    return output
 
 tools = [python_repl_tool]
 
 # ---------------------------------------------------------
 # 4. SPECIALIZED REACT AGENTS (Sub-Graphs)
 # ---------------------------------------------------------
-
 stat_agent = create_agent(llm, tools)
 ml_agent = create_agent(llm, tools)
 
@@ -84,7 +100,7 @@ ml_agent = create_agent(llm, tools)
 # ---------------------------------------------------------
 
 def profiler_node(state: AgentState):
-    """Deterministic EDA profiling. Generates the context for the LLM."""
+    logger.info("--- NODE: PROFILER ---")
     try:
         df = pd.read_csv("current_data.csv")
         profile = {
@@ -97,13 +113,15 @@ def profiler_node(state: AgentState):
             "basic_summary": df.describe().to_dict()
         }
         profile_str = json.dumps(profile, indent=2)
+        logger.info(f"Dataset profiled successfully: {len(df)} rows, {len(df.columns)} columns.")
     except Exception as e:
         profile_str = f"Error profiling dataset: {str(e)}"
+        logger.error(profile_str)
     
-    return {"dataset_profile": profile_str, "revision_count": 0}
+    return {"dataset_profile": profile_str, "revision_count": state.get("revision_count", 0)}
 
 def planner_node(state: AgentState):
-    """Outputs a structured JSON plan for the downstream execution agents."""
+    logger.info("--- NODE: PLANNER ---")
     sys_prompt = f"""You are the Master Data Science Planner.
     DATASET PROFILE: {state['dataset_profile']}
     USER QUERY: {state['user_query']}
@@ -111,15 +129,20 @@ def planner_node(state: AgentState):
     
     Determine the best mathematical strategy. Output a structured plan."""
     
-    # Use structured output to force JSON schema adherence
     structured_llm = llm.with_structured_output(AnalysisPlan)
     plan = structured_llm.invoke([SystemMessage(content=sys_prompt)])
+    
+    logger.info(f"Plan Generated: {plan.goal}")
+    logger.info(f"Target Variables: {plan.variables}")
+    logger.info(f"Stats Tests: {plan.statistical_tests}")
+    logger.info(f"ML Tasks: {plan.ml_tasks}")
     
     return {"analysis_plan": plan}
 
 def statistical_node(state: AgentState):
-    """Executes the statistical portion of the plan using a ReAct loop."""
+    logger.info("--- NODE: STATISTICAL AGENT ---")
     if not state["analysis_plan"].statistical_tests:
+        logger.info("Skipping: No statistical tests required by plan.")
         return {"statistical_results": "No statistical tests required by plan."}
 
     sys_prompt = f"""You are the Statistical Agent.
@@ -131,25 +154,32 @@ def statistical_node(state: AgentState):
     Conclude with the hard mathematical results (p-values, coefficients, etc)."""
     
     res = stat_agent.invoke({"messages": [SystemMessage(content=sys_prompt), HumanMessage(content="Begin statistical analysis.")]})
-    return {"statistical_results": res["messages"][-1].content}
+    final_result = res["messages"][-1].content
+    
+    logger.info("Statistical Agent completed its ReAct loop.")
+    return {"statistical_results": final_result}
 
 def ml_node(state: AgentState):
-    """Executes the Machine Learning portion of the plan using a ReAct loop."""
+    logger.info("--- NODE: ML AGENT ---")
     if not state["analysis_plan"].ml_tasks:
+        logger.info("Skipping: No ML tasks required by plan.")
         return {"ml_results": "No ML tasks required by plan."}
 
     sys_prompt = f"""You are the Machine Learning Agent.
     DATASET PROFILE: {state['dataset_profile']}
     TASKS TO EXECUTE: {', '.join(state['analysis_plan'].ml_tasks)}
     
-    The data is at `current_data.csv`. Write Python code using `python_repl_tool` to execute these ML tasks (e.g., PCA, Random Forest Feature Importance). 
+    The data is at `current_data.csv`. Write Python code using `python_repl_tool` to execute these ML tasks. 
     Analyze the tool output. Iterate if errors occur. Conclude with the final insights."""
     
     res = ml_agent.invoke({"messages": [SystemMessage(content=sys_prompt), HumanMessage(content="Begin ML analysis.")]})
-    return {"ml_results": res["messages"][-1].content}
+    final_result = res["messages"][-1].content
+    
+    logger.info("ML Agent completed its ReAct loop.")
+    return {"ml_results": final_result}
 
 def critic_node(state: AgentState):
-    """Reviews the outputs of both execution agents against the original plan."""
+    logger.info("--- NODE: CRITIC ---")
     sys_prompt = f"""You are the rigorous Statistical Critic.
     USER QUERY: {state['user_query']}
     PLAN: {state['analysis_plan'].json() if state['analysis_plan'] else ''}
@@ -162,10 +192,18 @@ def critic_node(state: AgentState):
     If no, output: "REJECTED: [Detailed instructions on what to fix]"
     """
     response = llm.invoke([SystemMessage(content=sys_prompt)])
-    return {"critic_feedback": response.content, "revision_count": state["revision_count"] + 1}
+    feedback = response.content
+    
+    if "REJECTED" in feedback.upper():
+        logger.warning(f"Critic Verdict: REJECTED. (Revision Count: {state['revision_count'] + 1})")
+        logger.warning(f"Feedback: {feedback}")
+    else:
+        logger.info("Critic Verdict: APPROVED.")
+        
+    return {"critic_feedback": feedback, "revision_count": state["revision_count"] + 1}
 
 def writer_node(state: AgentState):
-    """Formats the final response, injecting UI chart JSON if needed."""
+    logger.info("--- NODE: WRITER ---")
     sys_prompt = f"""You are the Final Writer.
     USER QUERY: {state['user_query']}
     STATISTICAL RESULTS: {state['statistical_results']}
@@ -177,15 +215,18 @@ def writer_node(state: AgentState):
     {{ "type": "line"|"bar"|"pie"|"scatter"|"area", ... }}
     ```"""
     response = llm.invoke([SystemMessage(content=sys_prompt)])
+    logger.info("Final response generated successfully.")
     return {"messages": [AIMessage(content=response.content)]}
-
 
 # ---------------------------------------------------------
 # 6. GRAPH COMPILATION
 # ---------------------------------------------------------
 def route_critic(state: AgentState):
-    if "REJECTED" in state['critic_feedback'] and state['revision_count'] < 3:
+    if "REJECTED" in state['critic_feedback'].upper() and state['revision_count'] < 3:
+        logger.info("Routing back to PLANNER for revision.")
         return "planner"
+    
+    logger.info("Routing to WRITER for final output.")
     return "writer"
 
 workflow = StateGraph(AgentState)
@@ -222,13 +263,16 @@ class ChatRequest(BaseModel):
 
 @app.post("/chat")
 async def chat_endpoint(req: ChatRequest):
+    logger.info("=== NEW CHAT REQUEST RECEIVED ===")
     try:
         active_csv = req.selectionCSV if req.selectionCSV else req.datasetContext
         if active_csv:
             with open("current_data.csv", "w") as f:
                 f.write(active_csv)
+            logger.info("Updated 'current_data.csv' with new active context.")
 
         user_query = next((msg.content for msg in reversed(req.messages) if msg.role == 'user'), "")
+        logger.info(f"User Query: {user_query}")
 
         initial_state = {
             "messages": [],
@@ -241,14 +285,15 @@ async def chat_endpoint(req: ChatRequest):
             "revision_count": 0
         }
 
+        logger.info("Invoking LangGraph Workflow...")
         final_state = app_graph.invoke(initial_state)
         
         final_msg = final_state["messages"][-1]
-        print(f"Final message content: {final_msg.content if hasattr(final_msg, 'content') else str(final_msg)}")
         response_text = final_msg.content if hasattr(final_msg, 'content') else str(final_msg)
         
+        logger.info("=== WORKFLOW COMPLETE ===")
         return {"response": response_text}
     
     except Exception as e:
-        print(f"CRASH: {e}", file=sys.stderr)
+        logger.error(f"CRASH in chat_endpoint: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
