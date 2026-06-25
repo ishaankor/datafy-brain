@@ -33,7 +33,7 @@ app.add_middleware(
 )
 
 llm = ChatOpenRouter(
-    model="nvidia/llama-nemotron-rerank-vl-1b-v2:free", 
+    model="nvidia/nemotron-3-ultra-550b-a55b:free", 
     temperature=0.1
 )
 
