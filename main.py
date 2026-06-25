@@ -1,11 +1,13 @@
 import os
 import sys
 import io
-from contextlib import redirect_stdout
 import pandas as pd
+import json
+from contextlib import redirect_stdout
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List, Optional
 from langchain_groq import ChatGroq
@@ -50,8 +52,8 @@ tools = [python_repl_tool]
 
 llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.1)
 
-system_prompt = """You are an elite Data Scientist and Statistician. You have access to a fully functional Python REPL.
-Instead of guessing math, you MUST write and execute Python code using `pandas` and `numpy` to find the exact statistical truth.
+system_prompt = """You are an autonomous, elite Data Scientist and Statistician. You have access to a Python REPL.
+You do not guess; you compute. ALWAYS target mathematical concepts and explain the math deeply based on exact results.
 
 The user's current data selection has been saved locally as `current_data.csv`.
 ALWAYS load the data in your first thought using:
@@ -60,14 +62,20 @@ import pandas as pd
 df = pd.read_csv('current_data.csv')
 ```
 
-## RULES
-1. ALWAYS target mathematical concepts and explain the math deeply based on the exact results of your Python execution.
-2. DO NOT try to calculate variance, standard deviation, or complex math in your head. Write a script, run it, and read the output.
-3. DO NOT generate matplotlib or seaborn plots. The user's frontend has a custom rendering engine.
-4. When a chart would help visualize the data, output a fenced code block tagged as 'chart' containing JSON of this exact shape:
+## YOUR AUTONOMY & APPROACH
+You have complete autonomy over how you analyze the data. You are not bound to a specific workflow. 
+1. Read the user's specific query carefully.
+2. Write Python code to explore, transform, aggregate, or model the dataset as necessary to find the mathematically rigorous answer.
+3. If the user's question is open-ended (e.g., "Analyze this"), write code to programmatically discover the most mathematically interesting patterns, correlations, or distributions.
+4. Formulate your final response by explaining the statistical truth you discovered.
+
+## JSON CHART PROTOCOL (STRICT)
+Do NOT generate matplotlib or seaborn plots. The user's frontend uses a custom rendering engine.
+If your analysis warrants a visualization to explain the mathematical concepts, output a fenced code block tagged as 'chart' containing JSON of this exact shape:
 ```chart
-{{ "type": "line"|"bar"|"pie"|"scatter"|"area", "title": "...", "caption": "...", "colors": ["#F5D061", "#E8912E", "#F8B150"], "x": "<x-field>", "y": "<y-field>" or ["y1","y2"], "z": "<z-field> (optional)", "data": [{{"name": "Row 5", "<x-field>": ...}}] }}
+{{ "type": "line"|"bar"|"pie"|"scatter"|"area", "title": "...", "caption": "...", "colors": ["#F5D061", "#E8912E", "#F8B150"], "x": "<primary-x-field>", "y": "<primary-y-field>" or ["y1","y2"], "z": "<third-dimension-field> (optional)", "data": [{{"name": "Point 1", "<x-field>": ..., "<y-field>": ...}}] }}
 ```
+Choose the chart type that mathematically best represents the data relationships (e.g., scatter for continuous correlation, z-axis for a third dimension, bar for categorical comparison).
 """
 
 prompt = ChatPromptTemplate.from_messages([
@@ -86,22 +94,20 @@ async def chat_endpoint(req: ChatRequest):
         if active_csv:
             with open("current_data.csv", "w") as f:
                 f.write(active_csv)
-
-        langchain_msgs = []
-        for msg in req.messages:
-            if msg.role == "user":
-                langchain_msgs.append(("human", msg.content))
-            elif msg.role == "assistant":
-                langchain_msgs.append(("ai", msg.content))
         
-        context_note = f"\n\n[SYSTEM: The active data context is '{req.selectionLabel}'. The file 'current_data.csv' has been updated with this data. Analyze this data to what the USER is asking for.]"
-        if langchain_msgs and langchain_msgs[-1][0] == "human":
-            langchain_msgs[-1] = ("human", langchain_msgs[-1][1] + context_note)
+        async def generate():
+            langchain_msgs = [(m.role if m.role != "assistant" else "ai", m.content) for m in req.messages]
+            
+            context_note = f"\n\n[SYSTEM: The active data context is '{req.selectionLabel}'. The file 'current_data.csv' has been updated with this data. Use your REPL tool to explore the data and answer the USER.]"
+            if langchain_msgs and langchain_msgs[-1][0] == "human":
+                langchain_msgs[-1] = ("human", langchain_msgs[-1][1] + context_note)
+            
+            result = await agent_executor.ainvoke({"messages": langchain_msgs})
+            output = result["output"]
+            
+            yield f"0:{json.dumps(output)}\n"
 
-        result = agent_executor.invoke({"messages": langchain_msgs})
-        
-        return {"response": result["output"]}
+        return StreamingResponse(generate(), media_type="text/plain")
     
     except Exception as e:
-        print(f"CRASH: {e}", file=sys.stderr)
         raise HTTPException(status_code=500, detail=str(e))
