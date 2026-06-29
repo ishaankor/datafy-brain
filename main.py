@@ -24,7 +24,6 @@ from langchain.agents import create_agent
 # ---------------------------------------------------------
 load_dotenv()
 
-# Setup structured logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - [%(name)s] %(message)s",
@@ -42,7 +41,7 @@ app.add_middleware(
 )
 
 llm = ChatOpenRouter(
-    model="google/gemma-4-26b-a4b-it:free", 
+    model="owl-alpha", 
     temperature=0.1
 )
 
