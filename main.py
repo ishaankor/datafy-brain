@@ -77,7 +77,7 @@ def python_repl_tool(command: str) -> str:
     f = io.StringIO()
     with redirect_stdout(f):
         try:
-            exec(command, globals(), repl_locals)
+            exec(command, repl_locals, repl_locals)
         except Exception as e:
             logger.error(f"Python Error: {e}")
             return f"{f.getvalue()}\nError: {e}".strip()
