@@ -242,10 +242,11 @@ def writer_node(state: AgentState):
     ML RESULTS: {state['ml_results']}
     
     Synthesize all findings into a mathematically rigorous final response. 
-    If a chart is needed, use the strict JSON chart protocol:
-    ```chart
-    {{ "type": "line"|"bar"|"pie"|"scatter"|"area", ... }}
-    ```"""
+    
+    If the results contain a base64 image string (e.g., IMAGE_BASE64: iVBORw0KG...), you MUST embed it in your final markdown response using this exact syntax:
+    ![Generated Chart](data:image/png;base64,<insert-base64-string-here>)
+    
+    Do not alter the base64 string. Explain the plot to the user clearly."""
     response = llm.invoke([SystemMessage(content=sys_prompt)])
     logger.info("Final response generated successfully.")
     return {"messages": [AIMessage(content=response.content)]}
