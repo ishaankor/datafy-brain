@@ -144,13 +144,29 @@ def statistical_node(state: AgentState):
         logger.info("Skipping: No statistical tests required by plan.")
         return {"statistical_results": "No statistical tests required by plan."}
 
-    sys_prompt = f"""You are the Statistical Agent.
+    sys_prompt = f"""You are the Data Science Agent.
     DATASET PROFILE: {state['dataset_profile']}
-    TASKS TO EXECUTE: {', '.join(state['analysis_plan'].statistical_tests)}
     
-    The data is at `current_data.csv`. Write Python code using `python_repl_tool` to execute these exact statistical tests. 
-    Analyze the tool output. If there is an error, rewrite and fix it. 
-    Conclude with the hard mathematical results (p-values, coefficients, etc)."""
+    The data is at `current_data.csv`. Write Python code using `python_repl_tool` to execute your tasks.
+    
+    CRITICAL PLOTTING RULES: 
+    This is a headless server. You CANNOT use `plt.show()`. 
+    If you generate a matplotlib or seaborn plot, you MUST encode it to base64 and print it like this:
+    ```python
+    import io
+    import base64
+    import matplotlib.pyplot as plt
+    
+    # ... create your plot ...
+    
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', bbox_inches='tight')
+    buf.seek(0)
+    img_base64 = base64.b64encode(buf.read()).decode('utf-8')
+    print(f"IMAGE_BASE64: {{img_base64}}")
+    plt.close() # Always close the plot
+    ```
+    Analyze the output. If there is an error, rewrite and fix it. Conclude with the final results."""
     
     res = stat_agent.invoke({"messages": [SystemMessage(content=sys_prompt), HumanMessage(content="Begin statistical analysis.")]})
     final_result = res["messages"][-1].content
@@ -164,12 +180,29 @@ def ml_node(state: AgentState):
         logger.info("Skipping: No ML tasks required by plan.")
         return {"ml_results": "No ML tasks required by plan."}
 
-    sys_prompt = f"""You are the Machine Learning Agent.
+    sys_prompt = f"""You are the Data Science Agent.
     DATASET PROFILE: {state['dataset_profile']}
-    TASKS TO EXECUTE: {', '.join(state['analysis_plan'].ml_tasks)}
     
-    The data is at `current_data.csv`. Write Python code using `python_repl_tool` to execute these ML tasks. 
-    Analyze the tool output. Iterate if errors occur. Conclude with the final insights."""
+    The data is at `current_data.csv`. Write Python code using `python_repl_tool` to execute your tasks.
+    
+    CRITICAL PLOTTING RULES: 
+    This is a headless server. You CANNOT use `plt.show()`. 
+    If you generate a matplotlib or seaborn plot, you MUST encode it to base64 and print it like this:
+    ```python
+    import io
+    import base64
+    import matplotlib.pyplot as plt
+    
+    # ... create your plot ...
+    
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', bbox_inches='tight')
+    buf.seek(0)
+    img_base64 = base64.b64encode(buf.read()).decode('utf-8')
+    print(f"IMAGE_BASE64: {{img_base64}}")
+    plt.close() # Always close the plot
+    ```
+    Analyze the output. If there is an error, rewrite and fix it. Conclude with the final results."""
     
     res = ml_agent.invoke({"messages": [SystemMessage(content=sys_prompt), HumanMessage(content="Begin ML analysis.")]})
     final_result = res["messages"][-1].content
