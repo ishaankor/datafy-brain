@@ -1,6 +1,7 @@
 import os
 import sys
 import io
+import re
 import json
 import operator
 import logging
@@ -94,6 +95,22 @@ tools = [python_repl_tool]
 stat_agent = create_agent(llm, tools)
 ml_agent = create_agent(llm, tools)
 
+def extract_and_clean_images(text: str):
+    """Strips massive Base64 strings out of the text so the LLM doesn't choke on them."""
+    images = []
+    pattern = r"IMAGE_BASE64:\s*([A-Za-z0-9+/=]+)"
+    
+    for match in re.finditer(pattern, text):
+        images.append(match.group(1))
+        
+    clean_text = re.sub(pattern, "[IMAGE SUCCESSFULLY GENERATED]", text)
+    return clean_text, images
+
+def route_after_planner(state: AgentState):
+    if state['analysis_plan'].intent == "simple":
+        return "fast_executor"
+    return "deep_executor"
+
 # ---------------------------------------------------------
 # 5. WORKFLOW NODES
 # ---------------------------------------------------------
@@ -148,77 +165,140 @@ def planner_node(state: AgentState):
     
     return {"analysis_plan": plan}
 
-def statistical_node(state: AgentState):
-    logger.info("--- NODE: STATISTICAL AGENT ---")
-    if not state["analysis_plan"].statistical_tests:
-        logger.info("Skipping: No statistical tests required by plan.")
-        return {"statistical_results": "No statistical tests required by plan."}
+# def statistical_node(state: AgentState):
+#     logger.info("--- NODE: STATISTICAL AGENT ---")
+#     if not state["analysis_plan"].statistical_tests:
+#         logger.info("Skipping: No statistical tests required by plan.")
+#         return {"statistical_results": "No statistical tests required by plan."}
 
-    sys_prompt = f"""You are the Data Science Agent.
+#     sys_prompt = f"""You are the Data Science Agent.
+#     DATASET PROFILE: {state['dataset_profile']}
+    
+#     The data is at `current_data.csv`. Write Python code using `python_repl_tool` to execute your tasks.
+    
+#     CRITICAL PLOTTING RULES: 
+#     This is a headless server. You CANNOT use `plt.show()`. 
+#     If you generate a matplotlib or seaborn plot, you MUST encode it to base64 and print it like this:
+#     ```python
+#     import io
+#     import base64
+#     import matplotlib.pyplot as plt
+    
+#     # ... create your plot ...
+    
+#     buf = io.BytesIO()
+#     plt.savefig(buf, format='png', bbox_inches='tight')
+#     buf.seek(0)
+#     img_base64 = base64.b64encode(buf.read()).decode('utf-8')
+#     print(f"IMAGE_BASE64: {{img_base64}}")
+#     plt.close() # Always close the plot
+#     ```
+#     Analyze the output. If there is an error, rewrite and fix it. Conclude with the final results."""
+    
+#     res = stat_agent.invoke({"messages": [SystemMessage(content=sys_prompt), HumanMessage(content="Begin statistical analysis.")]})
+#     final_result = res["messages"][-1].content
+    
+#     logger.info("Statistical Agent completed its ReAct loop.")
+#     return {"statistical_results": final_result}
+
+# def ml_node(state: AgentState):
+#     logger.info("--- NODE: ML AGENT ---")
+#     if not state["analysis_plan"].ml_tasks:
+#         logger.info("Skipping: No ML tasks required by plan.")
+#         return {"ml_results": "No ML tasks required by plan."}
+
+#     sys_prompt = f"""You are the Data Science Agent.
+#     DATASET PROFILE: {state['dataset_profile']}
+    
+#     The data is at `current_data.csv`. Write Python code using `python_repl_tool` to execute your tasks.
+    
+#     CRITICAL PLOTTING RULES: 
+#     This is a headless server. You CANNOT use `plt.show()`. 
+#     If you generate a matplotlib or seaborn plot, you MUST encode it to base64 and print it like this:
+#     ```python
+#     import io
+#     import base64
+#     import matplotlib.pyplot as plt
+    
+#     # ... create your plot ...
+    
+#     buf = io.BytesIO()
+#     plt.savefig(buf, format='png', bbox_inches='tight')
+#     buf.seek(0)
+#     img_base64 = base64.b64encode(buf.read()).decode('utf-8')
+#     print(f"IMAGE_BASE64: {{img_base64}}")
+#     plt.close() # Always close the plot
+#     ```
+#     Analyze the output. If there is an error, rewrite and fix it. Conclude with the final results."""
+    
+#     res = ml_agent.invoke({"messages": [SystemMessage(content=sys_prompt), HumanMessage(content="Begin ML analysis.")]})
+#     final_result = res["messages"][-1].content
+    
+#     logger.info("ML Agent completed its ReAct loop.")
+#     return {"ml_results": final_result}
+
+def fast_executor_node(state: AgentState):
+    """Handles 'simple' intent queries, bypassing the heavy multi-agent debate."""
+    logger.info("--- NODE: FAST EXECUTOR (Simple Query) ---")
+    sys_prompt = f"""You are a Fast Data Executor.
     DATASET PROFILE: {state['dataset_profile']}
+    USER QUERY: {state['user_query']}
     
-    The data is at `current_data.csv`. Write Python code using `python_repl_tool` to execute your tasks.
+    The data is at `current_data.csv`. Write Python using `python_repl_tool` to fulfill the user's exact request quickly.
     
-    CRITICAL PLOTTING RULES: 
-    This is a headless server. You CANNOT use `plt.show()`. 
-    If you generate a matplotlib or seaborn plot, you MUST encode it to base64 and print it like this:
-    ```python
-    import io
-    import base64
-    import matplotlib.pyplot as plt
+    CRITICAL OUTPUT RULES:
+    1. Text Queries (e.g., "What is the mean?"): Simply print() the final numerical answer. Do NOT generate a plot.
+    2. Visual Queries (e.g., "Plot this"): DO NOT use plt.show(). You MUST save the plot to io.BytesIO(), encode to base64, and print exactly as: `IMAGE_BASE64: <string>`.
+    3. Matplotlib 3.9+: If plotting boxplots, you MUST use `tick_labels` instead of the deprecated `labels` argument.
     
-    # ... create your plot ...
+    Keep it direct. Do not overcomplicate."""
     
-    buf = io.BytesIO()
-    plt.savefig(buf, format='png', bbox_inches='tight')
-    buf.seek(0)
-    img_base64 = base64.b64encode(buf.read()).decode('utf-8')
-    print(f"IMAGE_BASE64: {{img_base64}}")
-    plt.close() # Always close the plot
-    ```
-    Analyze the output. If there is an error, rewrite and fix it. Conclude with the final results."""
+    res = stat_agent.invoke({"messages": [SystemMessage(content=sys_prompt), HumanMessage(content="Execute the fast task.")]})
+    raw_output = res["messages"][-1].content
     
-    res = stat_agent.invoke({"messages": [SystemMessage(content=sys_prompt), HumanMessage(content="Begin statistical analysis.")]})
-    final_result = res["messages"][-1].content
+    clean_text, new_images = extract_and_clean_images(raw_output)
+    current_images = state.get("image_artifacts", []) + new_images
     
-    logger.info("Statistical Agent completed its ReAct loop.")
-    return {"statistical_results": final_result}
+    return {
+        "statistical_results": "Bypassed (Fast Path)", 
+        "ml_results": f"Fast Execution Output:\n{clean_text}",
+        "image_artifacts": current_images
+    }
 
-def ml_node(state: AgentState):
-    logger.info("--- NODE: ML AGENT ---")
-    if not state["analysis_plan"].ml_tasks:
-        logger.info("Skipping: No ML tasks required by plan.")
-        return {"ml_results": "No ML tasks required by plan."}
-
-    sys_prompt = f"""You are the Data Science Agent.
+def deep_executor_node(state: AgentState):
+    logger.info("--- NODE: DEEP EXECUTOR ---")
+    
+    plan = state['analysis_plan']
+    
+    sys_prompt = f"""You are the Data Science Executor.
     DATASET PROFILE: {state['dataset_profile']}
+    GOAL: {plan.goal}
+    VARIABLES: {', '.join(plan.variables)}
+    STATISTICAL TESTS: {', '.join(plan.statistical_tests) if plan.statistical_tests else 'None specified'}
+    ML TASKS: {', '.join(plan.ml_tasks) if plan.ml_tasks else 'None specified'}
     
-    The data is at `current_data.csv`. Write Python code using `python_repl_tool` to execute your tasks.
+    The data is at `current_data.csv`. Write Python using `python_repl_tool` to execute this plan.
     
-    CRITICAL PLOTTING RULES: 
-    This is a headless server. You CANNOT use `plt.show()`. 
-    If you generate a matplotlib or seaborn plot, you MUST encode it to base64 and print it like this:
-    ```python
-    import io
-    import base64
-    import matplotlib.pyplot as plt
+    CRITICAL OUTPUT RULES:
+    1. Base64 Output Only: DO NOT use plt.show(). Save plots to io.BytesIO(), encode to base64, and print exactly as: `IMAGE_BASE64: <string>`.
+    2. Matplotlib 3.9+: DO NOT use the deprecated `labels` kwarg in `boxplot()`. You MUST use `tick_labels`.
+    3. Results: Print numerical results clearly. DO NOT generate a plot unless it is necessary or requested.
     
-    # ... create your plot ...
+    Analyze the tool output. If there is an error, read the traceback and apply the smallest possible fix."""
     
-    buf = io.BytesIO()
-    plt.savefig(buf, format='png', bbox_inches='tight')
-    buf.seek(0)
-    img_base64 = base64.b64encode(buf.read()).decode('utf-8')
-    print(f"IMAGE_BASE64: {{img_base64}}")
-    plt.close() # Always close the plot
-    ```
-    Analyze the output. If there is an error, rewrite and fix it. Conclude with the final results."""
+    # We use stat_agent (the ReAct executor) to run the loop
+    res = stat_agent.invoke({"messages": [SystemMessage(content=sys_prompt), HumanMessage(content="Begin deep execution.")]})
+    raw_output = res["messages"][-1].content
     
-    res = ml_agent.invoke({"messages": [SystemMessage(content=sys_prompt), HumanMessage(content="Begin ML analysis.")]})
-    final_result = res["messages"][-1].content
+    # Extract images to protect the Critic's context window
+    clean_text, new_images = extract_and_clean_images(raw_output)
+    current_images = state.get("image_artifacts", []) + new_images
     
-    logger.info("ML Agent completed its ReAct loop.")
-    return {"ml_results": final_result}
+    return {
+        "statistical_results": clean_text, 
+        "ml_results": "Merged into deep executor.", 
+        "image_artifacts": current_images
+    }
 
 def critic_node(state: AgentState):
     logger.info("--- NODE: CRITIC ---")
@@ -276,17 +356,25 @@ workflow = StateGraph(AgentState)
 
 workflow.add_node("profiler", profiler_node)
 workflow.add_node("planner", planner_node)
-workflow.add_node("statistical_agent", statistical_node)
-workflow.add_node("ml_agent", ml_node)
+workflow.add_node("fast_executor", fast_executor_node)
+workflow.add_node("deep_executor", deep_executor_node)
 workflow.add_node("critic", critic_node)
 workflow.add_node("writer", writer_node)
 
 workflow.add_edge(START, "profiler")
 workflow.add_edge("profiler", "planner")
-workflow.add_edge("planner", "statistical_agent")
-workflow.add_edge("statistical_agent", "ml_agent")
-workflow.add_edge("ml_agent", "critic")
+
+# Semantic routing based on intent
+workflow.add_conditional_edges(
+    "planner", 
+    route_after_planner, 
+    {"fast_executor": "writer", "deep_executor": "deep_executor"}
+)
+
+# Deep path is now straightforward
+workflow.add_edge("deep_executor", "critic")
 workflow.add_conditional_edges("critic", route_critic, {"planner": "planner", "writer": "writer"})
+
 workflow.add_edge("writer", END)
 
 app_graph = workflow.compile()
