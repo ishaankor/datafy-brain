@@ -51,24 +51,24 @@ llm = ChatOpenRouter(
 # ---------------------------------------------------------
 class AnalysisPlan(BaseModel):
     intent: Literal["simple", "deep"] = Field(
-        default="simple", 
-        description="Use 'simple' for basic plotting, data fetching, or summaries. Use 'deep' for complex statistical tests or ML tasks."
+        default="deep",
+        description="Evaluate mathematical complexity. Use 'simple' ONLY for direct aggregations or basic plots. Use 'deep' if the query requires hypothesis testing, predictive modeling, or multi-step statistical reasoning."
     )
     goal: str = Field(
-        default="Default execution.",
+        default="Perform deep exploratory data analysis.",
         description="The primary mathematical or analytical goal."
     )
     variables: List[str] = Field(
         default_factory=list, 
-        description="Key columns to investigate."
+        description="Key columns required for the mathematical operations."
     )
     statistical_tests: List[str] = Field(
         default_factory=list, 
-        description="Specific statistical tests to run (e.g., ANOVA, t-test)."
+        description="Specific statistical tests to run (e.g., ANOVA, t-test, Shapiro-Wilk)."
     )
     ml_tasks: List[str] = Field(
         default_factory=list, 
-        description="Machine learning tasks (e.g., PCA, Feature Importance)."
+        description="Machine learning tasks (e.g., Random Forest, PCA, KMeans)."
     )
 
 class AgentState(TypedDict):
@@ -154,31 +154,31 @@ def profiler_node(state: AgentState):
 
 def planner_node(state: AgentState):
     logger.info("--- NODE: PLANNER ---")
-    sys_prompt = f"""You are the Master Data Science Planner.
+    sys_prompt = f"""You are an elite Mathematical Strategist.
     DATASET PROFILE: {state['dataset_profile']}
     USER QUERY: {state['user_query']}
-    CRITIC FEEDBACK (if revising): {state.get('critic_feedback', 'None')}
+    CRITIC FEEDBACK: {state.get('critic_feedback', 'None')}
     
-    Determine the best mathematical strategy. Output a structured plan."""
+    Your job is to autonomously design the optimal analytical architecture for the user's query. 
+    
+    Do not rely on basic keyword matching. Evaluate the true mathematical requirements:
+    - If the user asks for a simple visual or basic descriptive statistics (mean, median), set intent to 'simple'.
+    - If the user's request implies relationships, distributions, predictive modeling, or complex visualizations (like plotting decision trees), set intent to 'deep' and populate the required tests and ML tasks.
+    
+    Output a rigorous, mathematically sound AnalysisPlan."""
     
     structured_llm = llm.with_structured_output(AnalysisPlan)
     plan = structured_llm.invoke([SystemMessage(content=sys_prompt)])
-
+    
     if plan is None:
-        logger.warning("LLM failed to output valid JSON schema. Defaulting to safe fallback plan.")
+        logger.warning("LLM failed to output valid JSON schema. Defaulting to safe deep execution plan.")
         plan = AnalysisPlan(
-            intent="simple",
-            goal="Fallback execution due to LLM parsing failure.",
-            variables=[],
-            statistical_tests=[],
-            ml_tasks=[]
+            intent="deep",
+            goal="Analyze the dataset thoroughly based on the user query.",
         )
     
-    logger.info(f"Plan Generated: {plan.goal}")
-    logger.info(f"Target Variables: {plan.variables}")
-    logger.info(f"Stats Tests: {plan.statistical_tests}")
-    logger.info(f"ML Tasks: {plan.ml_tasks}")
-    
+    logger.info(f"Plan Intent: {plan.intent}")
+    logger.info(f"Plan Goal: {plan.goal}")
     return {"analysis_plan": plan}
 
 # def statistical_node(state: AgentState):
