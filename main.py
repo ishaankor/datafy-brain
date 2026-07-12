@@ -6,7 +6,7 @@ import json
 import operator
 import logging
 from contextlib import redirect_stdout
-from typing import List, Optional, TypedDict, Annotated, Sequence
+from typing import Literal, List, Optional, TypedDict, Annotated, Sequence
 
 import pandas as pd
 from dotenv import load_dotenv
@@ -50,10 +50,26 @@ llm = ChatOpenRouter(
 # 2. STRUCTURED DATA MODELS & STATE
 # ---------------------------------------------------------
 class AnalysisPlan(BaseModel):
-    goal: str = Field(description="The primary mathematical or analytical goal.")
-    variables: List[str] = Field(description="Key columns to investigate.")
-    statistical_tests: List[str] = Field(description="Specific statistical tests to run (e.g., ANOVA, t-test, pearson correlation).")
-    ml_tasks: List[str] = Field(description="Machine learning tasks (e.g., PCA, K-Means clustering, Feature Importance).")
+    intent: Literal["simple", "deep"] = Field(
+        default="simple", 
+        description="Use 'simple' for basic plotting, data fetching, or summaries. Use 'deep' for complex statistical tests or ML tasks."
+    )
+    goal: str = Field(
+        default="Default execution.",
+        description="The primary mathematical or analytical goal."
+    )
+    variables: List[str] = Field(
+        default_factory=list, 
+        description="Key columns to investigate."
+    )
+    statistical_tests: List[str] = Field(
+        default_factory=list, 
+        description="Specific statistical tests to run (e.g., ANOVA, t-test)."
+    )
+    ml_tasks: List[str] = Field(
+        default_factory=list, 
+        description="Machine learning tasks (e.g., PCA, Feature Importance)."
+    )
 
 class AgentState(TypedDict):
     messages: Annotated[Sequence[BaseMessage], operator.add]
