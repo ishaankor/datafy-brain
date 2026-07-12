@@ -41,7 +41,7 @@ app.add_middleware(
 )
 
 llm = ChatOpenRouter(
-    model="owl-alpha", 
+    model="gpt-oss-120b:free", 
     temperature=0.1
 )
 
