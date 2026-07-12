@@ -380,14 +380,13 @@ workflow.add_node("writer", writer_node)
 workflow.add_edge(START, "profiler")
 workflow.add_edge("profiler", "planner")
 
-# Semantic routing based on intent
 workflow.add_conditional_edges(
     "planner", 
     route_after_planner, 
-    {"fast_executor": "writer", "deep_executor": "deep_executor"}
+    {"fast_executor": "fast_executor", "deep_executor": "deep_executor"}
 )
 
-# Deep path is now straightforward
+workflow.add_edge("fast_executor", "writer")
 workflow.add_edge("deep_executor", "critic")
 workflow.add_conditional_edges("critic", route_critic, {"planner": "planner", "writer": "writer"})
 
