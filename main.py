@@ -130,6 +130,16 @@ def planner_node(state: AgentState):
     
     structured_llm = llm.with_structured_output(AnalysisPlan)
     plan = structured_llm.invoke([SystemMessage(content=sys_prompt)])
+
+    if plan is None:
+        logger.warning("LLM failed to output valid JSON schema. Defaulting to safe fallback plan.")
+        plan = AnalysisPlan(
+            intent="simple",
+            goal="Fallback execution due to LLM parsing failure.",
+            variables=[],
+            statistical_tests=[],
+            ml_tasks=[]
+        )
     
     logger.info(f"Plan Generated: {plan.goal}")
     logger.info(f"Target Variables: {plan.variables}")
