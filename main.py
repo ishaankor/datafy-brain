@@ -122,10 +122,10 @@ def extract_and_clean_images(text: str):
     clean_text = re.sub(pattern, "[IMAGE SUCCESSFULLY GENERATED]", text)
     return clean_text, images
 
-def route_after_planner(state: AgentState):
-    if state['analysis_plan'].intent == "simple":
-        return "fast_executor"
-    return "deep_executor"
+# def route_after_planner(state: AgentState):
+#     if state['analysis_plan'].intent == "simple":
+#         return "fast_executor"
+#     return "deep_executor"
 
 # ---------------------------------------------------------
 # 5. WORKFLOW NODES
@@ -368,13 +368,17 @@ def route_critic(state: AgentState):
     logger.info("Routing to WRITER for final output.")
     return "writer"
 
+def route_after_planner(state: AgentState):
+    if state['analysis_plan'].intent == "simple":
+        return "fast_executor"
+    return "deep_executor"
+
 workflow = StateGraph(AgentState)
 
 workflow.add_node("profiler", profiler_node)
 workflow.add_node("planner", planner_node)
 workflow.add_node("fast_executor", fast_executor_node)
-workflow.add_node("deep_executor", deep_executor_node)
-workflow.add_node("critic", critic_node)
+workflow.add_node("deep_executor", deep_executor_node) 
 workflow.add_node("writer", writer_node)
 
 workflow.add_edge(START, "profiler")
@@ -383,12 +387,14 @@ workflow.add_edge("profiler", "planner")
 workflow.add_conditional_edges(
     "planner", 
     route_after_planner, 
-    {"fast_executor": "fast_executor", "deep_executor": "deep_executor"}
+    {
+        "fast_executor": "fast_executor",
+        "deep_executor": "deep_executor"
+    }
 )
 
 workflow.add_edge("fast_executor", "writer")
-workflow.add_edge("deep_executor", "critic")
-workflow.add_conditional_edges("critic", route_critic, {"planner": "planner", "writer": "writer"})
+workflow.add_edge("deep_executor", "writer")
 
 workflow.add_edge("writer", END)
 
