@@ -3,16 +3,17 @@ import sys
 import io
 import re
 import json
+import base64
 import operator
 import logging
 from contextlib import redirect_stdout
-from typing import Literal, List, Optional, TypedDict, Annotated, Sequence
+from typing import List, Optional, TypedDict, Annotated, Sequence
 
 import pandas as pd
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, AIMessage
 from langchain_core.tools import tool
@@ -36,51 +37,37 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://datafy.ishaankor.workers.dev"],
-    # allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-llm = ChatOpenRouter(
-    model="laguna-xs-2.1:free", 
+primary_fast_llm = ChatOpenRouter(
+    model="google/gemini-1.5-flash", 
     temperature=0.1
 )
+
+backup_smart_llm = ChatOpenRouter(
+    model="meta-llama/llama-3-70b-instruct", 
+    temperature=0.1
+)
+
+llm = primary_fast_llm.with_fallbacks([backup_smart_llm])
+writer_llm = ChatOpenRouter(
+    model="openai/gpt-4o-mini", 
+    temperature=0.3
+).with_fallbacks([backup_smart_llm])
 
 # ---------------------------------------------------------
 # 2. STRUCTURED DATA MODELS & STATE
 # ---------------------------------------------------------
-class AnalysisPlan(BaseModel):
-    intent: Literal["simple", "deep"] = Field(
-        default="deep",
-        description="Evaluate mathematical complexity. Use 'simple' ONLY for direct aggregations or basic plots. Use 'deep' if the query requires hypothesis testing, predictive modeling, or multi-step statistical reasoning."
-    )
-    goal: str = Field(
-        default="Perform deep exploratory data analysis.",
-        description="The primary mathematical or analytical goal."
-    )
-    variables: List[str] = Field(
-        default_factory=list, 
-        description="Key columns required for the mathematical operations."
-    )
-    statistical_tests: List[str] = Field(
-        default_factory=list, 
-        description="Specific statistical tests to run (e.g., ANOVA, t-test, Shapiro-Wilk)."
-    )
-    ml_tasks: List[str] = Field(
-        default_factory=list, 
-        description="Machine learning tasks (e.g., Random Forest, PCA, KMeans)."
-    )
-
 class AgentState(TypedDict):
     messages: Annotated[Sequence[BaseMessage], operator.add]
     user_query: str
     dataset_profile: str
-    analysis_plan: Optional[AnalysisPlan]
     statistical_results: str
-    ml_results: str
-    critic_feedback: str
-    revision_count: int
+    image_artifacts: List[str]
 
 # ---------------------------------------------------------
 # 3. TOOLS
@@ -101,32 +88,15 @@ def python_repl_tool(command: str) -> str:
             return f"{f.getvalue()}\nError: {e}".strip()
     
     output = f.getvalue().strip()
-    logger.info(f"Python Output:\n{output}")
+    logger.info(f"Python Output:\n{output[:500]}...")
     return output
 
 tools = [python_repl_tool]
 
 # ---------------------------------------------------------
-# 4. SPECIALIZED REACT AGENTS (Sub-Graphs)
+# 4. SPECIALIZED REACT AGENTS
 # ---------------------------------------------------------
 stat_agent = create_agent(llm, tools)
-ml_agent = create_agent(llm, tools)
-
-def extract_and_clean_images(text: str):
-    """Strips massive Base64 strings out of the text so the LLM doesn't choke on them."""
-    images = []
-    pattern = r"IMAGE_BASE64:\s*([A-Za-z0-9+/=]+)"
-    
-    for match in re.finditer(pattern, text):
-        images.append(match.group(1))
-        
-    clean_text = re.sub(pattern, "[IMAGE SUCCESSFULLY GENERATED]", text)
-    return clean_text, images
-
-# def route_after_planner(state: AgentState):
-#     if state['analysis_plan'].intent == "simple":
-#         return "fast_executor"
-#     return "deep_executor"
 
 # ---------------------------------------------------------
 # 5. WORKFLOW NODES
@@ -151,256 +121,76 @@ def profiler_node(state: AgentState):
         profile_str = f"Error profiling dataset: {str(e)}"
         logger.error(profile_str)
     
-    return {"dataset_profile": profile_str, "revision_count": state.get("revision_count", 0)}
+    return {"dataset_profile": profile_str}
 
-def planner_node(state: AgentState):
-    logger.info("--- NODE: PLANNER ---")
-    sys_prompt = f"""You are an elite Mathematical Strategist.
-    DATASET PROFILE: {state['dataset_profile']}
-    USER QUERY: {state['user_query']}
-    CRITIC FEEDBACK: {state.get('critic_feedback', 'None')}
+def unified_executor_node(state: AgentState):
+    logger.info("--- NODE: UNIFIED STRATEGIC EXECUTOR ---")
     
-    Your job is to autonomously design the optimal analytical architecture for the user's query. 
-    
-    Do not rely on basic keyword matching. Evaluate the true mathematical requirements:
-    - If the user asks for a simple visual or basic descriptive statistics (mean, median), set intent to 'simple'.
-    - If the user's request implies relationships, distributions, predictive modeling, or complex visualizations (like plotting decision trees), set intent to 'deep' and populate the required tests and ML tasks.
-    
-    Output a rigorous, mathematically sound AnalysisPlan."""
-    
-    structured_llm = llm.with_structured_output(AnalysisPlan)
-    plan = structured_llm.invoke([SystemMessage(content=sys_prompt)])
-    
-    if plan is None:
-        logger.warning("LLM failed to output valid JSON schema. Defaulting to safe deep execution plan.")
-        plan = AnalysisPlan(
-            intent="deep",
-            goal="Analyze the dataset thoroughly based on the user query.",
-        )
-    
-    logger.info(f"Plan Intent: {plan.intent}")
-    logger.info(f"Plan Goal: {plan.goal}")
-    return {"analysis_plan": plan}
-
-# def statistical_node(state: AgentState):
-#     logger.info("--- NODE: STATISTICAL AGENT ---")
-#     if not state["analysis_plan"].statistical_tests:
-#         logger.info("Skipping: No statistical tests required by plan.")
-#         return {"statistical_results": "No statistical tests required by plan."}
-
-#     sys_prompt = f"""You are the Data Science Agent.
-#     DATASET PROFILE: {state['dataset_profile']}
-    
-#     The data is at `current_data.csv`. Write Python code using `python_repl_tool` to execute your tasks.
-    
-#     CRITICAL PLOTTING RULES: 
-#     This is a headless server. You CANNOT use `plt.show()`. 
-#     If you generate a matplotlib or seaborn plot, you MUST encode it to base64 and print it like this:
-#     ```python
-#     import io
-#     import base64
-#     import matplotlib.pyplot as plt
-    
-#     # ... create your plot ...
-    
-#     buf = io.BytesIO()
-#     plt.savefig(buf, format='png', bbox_inches='tight')
-#     buf.seek(0)
-#     img_base64 = base64.b64encode(buf.read()).decode('utf-8')
-#     print(f"IMAGE_BASE64: {{img_base64}}")
-#     plt.close() # Always close the plot
-#     ```
-#     Analyze the output. If there is an error, rewrite and fix it. Conclude with the final results."""
-    
-#     res = stat_agent.invoke({"messages": [SystemMessage(content=sys_prompt), HumanMessage(content="Begin statistical analysis.")]})
-#     final_result = res["messages"][-1].content
-    
-#     logger.info("Statistical Agent completed its ReAct loop.")
-#     return {"statistical_results": final_result}
-
-# def ml_node(state: AgentState):
-#     logger.info("--- NODE: ML AGENT ---")
-#     if not state["analysis_plan"].ml_tasks:
-#         logger.info("Skipping: No ML tasks required by plan.")
-#         return {"ml_results": "No ML tasks required by plan."}
-
-#     sys_prompt = f"""You are the Data Science Agent.
-#     DATASET PROFILE: {state['dataset_profile']}
-    
-#     The data is at `current_data.csv`. Write Python code using `python_repl_tool` to execute your tasks.
-    
-#     CRITICAL PLOTTING RULES: 
-#     This is a headless server. You CANNOT use `plt.show()`. 
-#     If you generate a matplotlib or seaborn plot, you MUST encode it to base64 and print it like this:
-#     ```python
-#     import io
-#     import base64
-#     import matplotlib.pyplot as plt
-    
-#     # ... create your plot ...
-    
-#     buf = io.BytesIO()
-#     plt.savefig(buf, format='png', bbox_inches='tight')
-#     buf.seek(0)
-#     img_base64 = base64.b64encode(buf.read()).decode('utf-8')
-#     print(f"IMAGE_BASE64: {{img_base64}}")
-#     plt.close() # Always close the plot
-#     ```
-#     Analyze the output. If there is an error, rewrite and fix it. Conclude with the final results."""
-    
-#     res = ml_agent.invoke({"messages": [SystemMessage(content=sys_prompt), HumanMessage(content="Begin ML analysis.")]})
-#     final_result = res["messages"][-1].content
-    
-#     logger.info("ML Agent completed its ReAct loop.")
-#     return {"ml_results": final_result}
-
-def fast_executor_node(state: AgentState):
-    """Handles 'simple' intent queries, bypassing the heavy multi-agent debate."""
-    logger.info("--- NODE: FAST EXECUTOR (Simple Query) ---")
-    sys_prompt = f"""You are a Fast Data Executor.
+    sys_prompt = f"""You are an autonomous Principal Data Scientist.
     DATASET PROFILE: {state['dataset_profile']}
     USER QUERY: {state['user_query']}
     
-    The data is at `current_data.csv`. Write Python using `python_repl_tool` to fulfill the user's exact request quickly.
+    You have complete analytical freedom to solve the user's query. The data is available locally at `current_data.csv`. 
     
-    CRITICAL OUTPUT RULES:
-    1. Text Queries (e.g., "What is the mean?"): Simply print() the final numerical answer. Do NOT generate a plot.
-    2. Visual Queries (e.g., "Plot this"): DO NOT use plt.show(). You MUST save the plot to io.BytesIO(), encode to base64, and print exactly as: `IMAGE_BASE64: <string>`.
-    3. Matplotlib 3.9+: If plotting boxplots, you MUST use `tick_labels` instead of the deprecated `labels` argument.
+    Depending on the mathematical concepts and logical requirements of the query, you must autonomously decide whether to:
+    - Perform exploratory data analysis (EDA) and print summary statistics.
+    - Run inferential statistics (e.g., t-tests, correlations).
+    - Train and evaluate machine learning models (e.g., exploring ensemble methods like joining decision trees with random_forests).
+    - Create visualizations.
     
-    Keep it direct. Do not overcomplicate."""
+    CRITICAL EXECUTION RULES:
+    1. Respond directly to the intent. Evaluate the true mathematical requirements. If the query is just "Compare these", run a statistical comparison or print a pandas summary. DO NOT blindly generate a plot unless it explicitly serves the analytical goal.
+    2. Treat the CSV file as read-only. Do not overwrite `current_data.csv`, as those dataset inputs are utilized by other commands.
+    3. If your analysis DOES require a visualization, you MUST save it to disk strictly as `chart.png`. DO NOT output base64 strings to the console.
+    4. Print all numerical conclusions and statistical summaries clearly so the Final Delivery Agent can read them.
+    5. Always generate questions that target mathematical concepts to guide the user's understanding of the data if further clarification is needed.
     
-    res = stat_agent.invoke({"messages": [SystemMessage(content=sys_prompt), HumanMessage(content="Execute the fast task.")]})
-    
-    full_execution_log = "\n".join([str(m.content) for m in res["messages"]])
-    
-    clean_text, new_images = extract_and_clean_images(full_execution_log)
-    
-    current_images = state.get("image_artifacts", []) + new_images
-    
-    return {
-        "messages": [], 
-        "statistical_results": "Bypassed (Fast Path)", 
-        "ml_results": f"Fast Execution Output:\n{res['messages'][-1].content}",
-        "image_artifacts": current_images
-    }
+    Write and execute the appropriate Python code now."""
 
-def deep_executor_node(state: AgentState):
-    logger.info("--- NODE: DEEP EXECUTOR ---")
+    res = stat_agent.invoke({"messages": [SystemMessage(content=sys_prompt), HumanMessage(content="Analyze the dataset and run the code.")]})
     
-    plan = state['analysis_plan']
+    current_images = state.get("image_artifacts", [])
     
-    sys_prompt = f"""You are the Data Science Executor.
-    DATASET PROFILE: {state['dataset_profile']}
-    GOAL: {plan.goal}
-    VARIABLES: {', '.join(plan.variables)}
-    STATISTICAL TESTS: {', '.join(plan.statistical_tests) if plan.statistical_tests else 'None specified'}
-    ML TASKS: {', '.join(plan.ml_tasks) if plan.ml_tasks else 'None specified'}
-    
-    The data is at `current_data.csv`. Write Python using `python_repl_tool` to execute this plan.
-    
-    CRITICAL OUTPUT RULES:
-    1. Base64 Output Only: DO NOT use plt.show(). Save plots to io.BytesIO(), encode to base64, and print exactly as: `IMAGE_BASE64: <string>`.
-    2. Matplotlib 3.9+: DO NOT use the deprecated `labels` kwarg in `boxplot()`. You MUST use `tick_labels`.
-    3. Results: Print numerical results clearly. DO NOT generate a plot unless it is necessary or requested.
-    
-    Analyze the tool output. If there is an error, read the traceback and apply the smallest possible fix."""
-    
-    res = stat_agent.invoke({"messages": [SystemMessage(content=sys_prompt), HumanMessage(content="Use the python_repl_tool to load current_data.csv and execute the plan.")]})
-    
-    full_execution_log = "\n".join([str(m.content) for m in res["messages"]])
-    
-    clean_text, new_images = extract_and_clean_images(full_execution_log)
-    
-    current_images = state.get("image_artifacts", []) + new_images
-    
-    return {
-        "messages": [], 
-        "statistical_results": clean_text, 
-        "ml_results": "Merged into deep executor.", 
-        "image_artifacts": current_images
-    }
-
-def critic_node(state: AgentState):
-    logger.info("--- NODE: CRITIC ---")
-    sys_prompt = f"""You are the rigorous Statistical Critic.
-    USER QUERY: {state['user_query']}
-    PLAN: {state['analysis_plan'].json() if state['analysis_plan'] else ''}
-    STATISTICAL RESULTS: {state['statistical_results']}
-    ML RESULTS: {state['ml_results']}
-    
-    Review the actual computed artifacts. 
-    Did the agents successfully execute the plan? Are the conclusions mathematically sound?
-    If yes, output: "APPROVED: [Reason]"
-    If no, output: "REJECTED: [Detailed instructions on what to fix]"
-    """
-    response = llm.invoke([SystemMessage(content=sys_prompt)])
-    feedback = response.content
-    
-    if "REJECTED" in feedback.upper():
-        logger.warning(f"Critic Verdict: REJECTED. (Revision Count: {state['revision_count'] + 1})")
-        logger.warning(f"Feedback: {feedback}")
-    else:
-        logger.info("Critic Verdict: APPROVED.")
+    if os.path.exists("chart.png"):
+        with open("chart.png", "rb") as img_file:
+            current_images.append(base64.b64encode(img_file.read()).decode("utf-8"))
+        os.remove("chart.png")
         
-    return {"critic_feedback": feedback, "revision_count": state["revision_count"] + 1}
+    return {
+        "messages": [],
+        "statistical_results": res['messages'][-1].content,
+        "image_artifacts": current_images
+    }
 
 def writer_node(state: AgentState):
     logger.info("--- NODE: WRITER ---")
-    sys_prompt = f"""You are the Final Writer.
+    sys_prompt = f"""You are the Final Delivery Agent.
     USER QUERY: {state['user_query']}
-    STATISTICAL RESULTS: {state['statistical_results']}
-    ML RESULTS: {state['ml_results']}
+    EXECUTION RESULTS: {state.get('statistical_results', '')}
     
-    Synthesize all findings into a mathematically rigorous final response. 
+    CRITICAL INSTRUCTIONS:
+    1. Do not attempt to write the markdown image tag yourself. It is handled by the system.
+    2. DO NOT apologize for missing base64 strings or missing data.
+    3. If the execution results indicate an image was generated and there is no other mathematical data, simply say: "Here is the visualization you requested:" and stop.
     
-    If the results contain a base64 image string (e.g., IMAGE_BASE64: iVBORw0KG...), you MUST embed it in your final markdown response using this exact syntax:
-    ![Generated Chart](data:image/png;base64,<insert-base64-string-here>)
+    Synthesize the mathematical findings smoothly and clearly."""
     
-    Do not alter the base64 string. Explain the plot to the user clearly."""
-    response = llm.invoke([SystemMessage(content=sys_prompt)])
+    response = writer_llm.invoke([SystemMessage(content=sys_prompt)])
     logger.info("Final response generated successfully.")
     return {"messages": [AIMessage(content=response.content)]}
 
 # ---------------------------------------------------------
-# 6. GRAPH COMPILATION
+# 6. GRAPH COMPILATION (Flattened)
 # ---------------------------------------------------------
-def route_critic(state: AgentState):
-    if "REJECTED" in state['critic_feedback'].upper() and state['revision_count'] < 3:
-        logger.info("Routing back to PLANNER for revision.")
-        return "planner"
-    
-    logger.info("Routing to WRITER for final output.")
-    return "writer"
-
-def route_after_planner(state: AgentState):
-    if state['analysis_plan'].intent == "simple":
-        return "fast_executor"
-    return "deep_executor"
-
 workflow = StateGraph(AgentState)
 
 workflow.add_node("profiler", profiler_node)
-workflow.add_node("planner", planner_node)
-workflow.add_node("fast_executor", fast_executor_node)
-workflow.add_node("deep_executor", deep_executor_node) 
+workflow.add_node("executor", unified_executor_node)
 workflow.add_node("writer", writer_node)
 
 workflow.add_edge(START, "profiler")
-workflow.add_edge("profiler", "planner")
-
-workflow.add_conditional_edges(
-    "planner", 
-    route_after_planner, 
-    {
-        "fast_executor": "fast_executor",
-        "deep_executor": "deep_executor"
-    }
-)
-
-workflow.add_edge("fast_executor", "writer")
-workflow.add_edge("deep_executor", "writer")
-
+workflow.add_edge("profiler", "executor")
+workflow.add_edge("executor", "writer")
 workflow.add_edge("writer", END)
 
 app_graph = workflow.compile()
@@ -435,18 +225,27 @@ async def chat_endpoint(req: ChatRequest):
             "messages": [],
             "user_query": f"Data Context: {req.selectionLabel}\nQuery: {user_query}",
             "dataset_profile": "",
-            "analysis_plan": None,
             "statistical_results": "",
-            "ml_results": "",
-            "critic_feedback": "",
-            "revision_count": 0
+            "image_artifacts": []
         }
 
         logger.info("Invoking LangGraph Workflow...")
-        final_state = app_graph.invoke(initial_state)
+        config = {"recursion_limit": 10}
+        final_state = app_graph.invoke(initial_state, config)
         
-        final_msg = final_state["messages"][-1]
-        response_text = final_msg.content if hasattr(final_msg, 'content') else str(final_msg)
+        if "messages" in final_state and len(final_state["messages"]) > 0:
+            final_msg = final_state["messages"][-1]
+            response_text = final_msg.content if hasattr(final_msg, 'content') else str(final_msg)
+        else:
+            response_text = "Here are the results of the analysis:"
+            
+        images = final_state.get("image_artifacts", [])
+        if images:
+            logger.info(f"Injecting {len(images)} base64 visual artifacts into response text.")
+            response_text += "\n\n### Visualizations\n"
+            for img in images:
+                clean_img = img.replace("IMAGE_BASE64:", "").strip()
+                response_text += f"\n![Generated Chart](data:image/png;base64,{clean_img})\n"
         
         logger.info("=== WORKFLOW COMPLETE ===")
         return {"response": response_text}
