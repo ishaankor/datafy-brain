@@ -270,14 +270,17 @@ def fast_executor_node(state: AgentState):
     Keep it direct. Do not overcomplicate."""
     
     res = stat_agent.invoke({"messages": [SystemMessage(content=sys_prompt), HumanMessage(content="Execute the fast task.")]})
-    raw_output = res["messages"][-1].content
     
-    clean_text, new_images = extract_and_clean_images(raw_output)
+    full_execution_log = "\n".join([str(m.content) for m in res["messages"]])
+    
+    clean_text, new_images = extract_and_clean_images(full_execution_log)
+    
     current_images = state.get("image_artifacts", []) + new_images
     
     return {
+        "messages": [], 
         "statistical_results": "Bypassed (Fast Path)", 
-        "ml_results": f"Fast Execution Output:\n{clean_text}",
+        "ml_results": f"Fast Execution Output:\n{res['messages'][-1].content}",
         "image_artifacts": current_images
     }
 
@@ -302,15 +305,16 @@ def deep_executor_node(state: AgentState):
     
     Analyze the tool output. If there is an error, read the traceback and apply the smallest possible fix."""
     
-    # We use stat_agent (the ReAct executor) to run the loop
-    res = stat_agent.invoke({"messages": [SystemMessage(content=sys_prompt), HumanMessage(content="Begin deep execution.")]})
-    raw_output = res["messages"][-1].content
+    res = stat_agent.invoke({"messages": [SystemMessage(content=sys_prompt), HumanMessage(content="Use the python_repl_tool to load current_data.csv and execute the plan.")]})
     
-    # Extract images to protect the Critic's context window
-    clean_text, new_images = extract_and_clean_images(raw_output)
+    full_execution_log = "\n".join([str(m.content) for m in res["messages"]])
+    
+    clean_text, new_images = extract_and_clean_images(full_execution_log)
+    
     current_images = state.get("image_artifacts", []) + new_images
     
     return {
+        "messages": [], 
         "statistical_results": clean_text, 
         "ml_results": "Merged into deep executor.", 
         "image_artifacts": current_images
