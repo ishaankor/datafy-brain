@@ -42,7 +42,7 @@ app.add_middleware(
 )
 
 llm = ChatOpenRouter(
-    model="gpt-oss-20b:free", 
+    model="laguna-xs-2.1:free", 
     temperature=0.1
 )
 
