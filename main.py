@@ -44,19 +44,19 @@ app.add_middleware(
 )
 
 primary_fast_llm = ChatOpenRouter(
-    model="google/gemini-1.5-flash", 
+    model="nemotron-3-super-120b-a12b:free", 
     temperature=0.1
 )
 
 backup_smart_llm = ChatOpenRouter(
-    model="meta-llama/llama-3-70b-instruct", 
+    model="nemotron-3-nano-30b-a3b:free", 
     temperature=0.1
 )
 
 llm = primary_fast_llm.with_fallbacks([backup_smart_llm])
 writer_llm = ChatOpenRouter(
-    model="openai/gpt-4o-mini", 
-    temperature=0.3
+    model="gpt-oss-20b:free", 
+    temperature=0.1
 ).with_fallbacks([backup_smart_llm])
 
 # ---------------------------------------------------------
